@@ -93,15 +93,19 @@ class ZhihuCrawler():
         self.user_introduction = ''
         self.user_weibo_addr = ''
         self.src_tag = src_tag
+        self.skilled_topic_list = []
 
     def send_request(self):
         '''
         发送HTTP请求
         :return:
         '''
-        followee_url = self.url + '/followees'
+        if self.src_tag is True:
+            get_url = self.url + '/followees'
+        else:
+            get_url = self.url
         try:
-            ret = requests.get(followee_url, cookies=self.cookie, headers=self.header)
+            ret = requests.get(get_url, cookies=self.cookie, headers=self.header)
         except requests.RequestException, e:
             print '查询用户信息失败！'
             print e.strerror
@@ -123,6 +127,7 @@ class ZhihuCrawler():
             print '长度为空！\n'
             return
         else:
+            # print source
             xpath_tree = html.fromstring(source)
             # 解析获取的到的html
             print('用户个人信息：')
@@ -206,6 +211,21 @@ class ZhihuCrawler():
                 print('当前获得感谢数：%d' % self.user_thank_num)
             except:
                 pass
+            # 20160913 获取当前用户擅长话题
+            if len(xpath_tree.xpath('//div[@class="zm-profile-section-wrap zm-profile-section-grid skilled-topics"]')) > 0:
+                hide_lst = xpath_tree.xpath('//script[@class="ProfileExpertItem-template"]/text()')
+                for item in hide_lst:
+                    ret_item = re.search('class="zg-gray-darker">(.*?)</a>', item.encode('utf-8'))
+                    self.skilled_topic_list.append(ret_item.groups(0)[0])
+                # 隐藏的擅长话题对应的是'script'类型的结点，其向下的层级没有层次关系，都是普通的文本，需要使用正则表达式
+                for item in xpath_tree.xpath('//script[@class="ProfileExpertItem-template"]/div/div/div/h3/a/text()'):
+                    self.skilled_topic_list.append(item.encode('utf-8'))
+                for item in xpath_tree.xpath('//div[@class="zm-profile-section-list zg-clear"]/div/div/div/h3/a/text()'):
+                    self.skilled_topic_list.append(item.encode('utf-8'))
+                print '该用户擅长话题：'
+                for item in self.skilled_topic_list:
+                    print item
+
             print '*' * 25
             # 模拟点击页面底部的"更多"按钮，获取全部关注者
             if self.src_tag is True:
