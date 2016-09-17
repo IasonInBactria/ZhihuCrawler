@@ -4,6 +4,11 @@ import requests
 from lxml import html
 import json
 import re
+from multiprocessing.dummy import Pool
+from multiprocessing import cpu_count
+from gevent import monkey
+import gevent
+import time
 
 # from bs4 import BeautifulSoup
 #
@@ -42,6 +47,22 @@ import re
 #     pic_path = 'D:/备份/Theme/NewWallpaper/%d.jpg' % pic_tag
 #     urllib.urlretrieve(item, pic_path.decode('utf-8'))
 #     pic_tag += 1
+
+def request_item(item):
+    new_crawler = ZhihuCrawler(item, src_tag=False)
+    new_crawler.send_request()
+
+
+def get_followee_info(follow_item):
+    ret_event = gevent.spawn(request_item, follow_item)
+    ret_event.join()
+
+
+# 获取关注人信息
+def implement_pool(followee_list):
+    for followee_item in followee_list:
+        get_followee_info(followee_item)
+
 
 
 # 爬取知乎用户信息
@@ -133,7 +154,10 @@ class ZhihuCrawler():
             print('用户个人信息：')
             print '*' * 20
             try:
-                self.user_name = xpath_tree.xpath('//a[@class="name"]/text()')[0].encode('utf-8')
+                if self.src_tag is True:
+                    self.user_name = xpath_tree.xpath('//div[@class="title-section"]/a/text()')[0].encode('utf-8')
+                else:
+                    self.user_name = xpath_tree.xpath('//div[@class="title-section"]/span/text()')[0].encode('utf-8')
                 print('用户名：%s' % self.user_name)
             except:
                 pass
@@ -213,15 +237,18 @@ class ZhihuCrawler():
                 pass
             # 20160913 获取当前用户擅长话题
             if len(xpath_tree.xpath('//div[@class="zm-profile-section-wrap zm-profile-section-grid skilled-topics"]')) > 0:
-                hide_lst = xpath_tree.xpath('//script[@class="ProfileExpertItem-template"]/text()')
-                for item in hide_lst:
-                    ret_item = re.search('class="zg-gray-darker">(.*?)</a>', item.encode('utf-8'))
-                    self.skilled_topic_list.append(ret_item.groups(0)[0])
-                # 隐藏的擅长话题对应的是'script'类型的结点，其向下的层级没有层次关系，都是普通的文本，需要使用正则表达式
-                for item in xpath_tree.xpath('//script[@class="ProfileExpertItem-template"]/div/div/div/h3/a/text()'):
-                    self.skilled_topic_list.append(item.encode('utf-8'))
                 for item in xpath_tree.xpath('//div[@class="zm-profile-section-list zg-clear"]/div/div/div/h3/a/text()'):
                     self.skilled_topic_list.append(item.encode('utf-8'))
+
+                # 隐藏的擅长话题对应的是'script'类型的结点，其向下的层级没有层次关系，都是普通的文本，需要使用正则表达式
+                hide_lst = xpath_tree.xpath('//script[@class="ProfileExpertItem-template"]/text()')
+                if len(hide_lst) > 0:
+                    for item in hide_lst:
+                        try:
+                            ret_item = re.search('class="zg-gray-darker">(.*?)</a>', item.encode('utf-8'))
+                            self.skilled_topic_list.append(ret_item.groups(0)[0])
+                        except:
+                            pass
                 print '该用户擅长话题：'
                 for item in self.skilled_topic_list:
                     print item
@@ -250,17 +277,19 @@ class ZhihuCrawler():
 
         click_num = followees_num / 20
         count = 0
+        follow_list = []
 
         cur_href_list = xpath_tree.xpath('//a[@class="zm-item-link-avatar"]/@href')
         for item in cur_href_list:
             # 拆分字符串，获取关注的人的知乎ID
             cur_href = item.encode('utf-8')
-            # cur_split_list = cur_href.split('/people/')
+            cur_split_list = cur_href.split('/people/')
             # 此处最好用正则表达式，因为知乎现在不仅有个人账号，抓取到的html的形式未必有'/people/'
             ret_re = re.match('/\w+/(.*)', cur_href)
-            new_crawler = ZhihuCrawler(ret_re.groups(0)[0], src_tag=False)
-            new_crawler.send_request()
+            # new_crawler = ZhihuCrawler(ret_re.groups(0)[0], src_tag=False)
+            # new_crawler.send_request()
             count += 1
+            follow_list.append(ret_re.groups(0)[0])
 
         for i in xrange(1, click_num + 1):
             # 因为关注者列表一次只显示20人，所以需要多次发送请求显示全部关注的人
@@ -280,20 +309,34 @@ class ZhihuCrawler():
                         cur_href = xpath_tree.xpath('//a[@class="zm-item-link-avatar"]/@href')[0].encode('utf-8')
                         # 拆分字符串，获取关注的人的知乎ID
                         cur_split_list = cur_href.split('/people/')
-                        new_crawler = ZhihuCrawler(cur_split_list[1], src_tag=False)
-                        new_crawler.send_request()
+                        follow_list.append(cur_split_list[1])
+                        # new_crawler = ZhihuCrawler(cur_split_list[1], src_tag=False)
+                        # new_crawler.send_request()
                         count += 1
                 else:
                     print('获取失败！状态码：%d\n' % ret_more.status_code)
                     print ret_more.reason
             except requests.RequestException as e:
-                pass
+                print e.strerror
 
-        print count
+        # 20160916使用多进程爬取关注的人
+        # spawn_list = []
+        # for item in follow_list:
+        #     spawn_list.append(gevent.spawn(get_followee_info, item))
+        #
+        # gevent.joinall(spawn_list)
+        # print count
+        ret_pool = Pool(cpu_count() * 2)
+        ret_pool.apply_async(implement_pool(follow_list))
+        ret_pool.close()
+        ret_pool.join()
 
 if __name__ == '__main__':
     print '请输入知乎用户ID：\n'
     start_name = raw_input()
+    time1 = time.time()
     # src_tag的主要作用是控制走向，只获取输入用户和其关注的人的信息，不再向下递归
     crawler = ZhihuCrawler(start_name, src_tag=True)
     crawler.send_request()
+    time2 = time.time()
+    print '总用时：%d' , time2 - time1
