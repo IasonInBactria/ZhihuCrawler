@@ -4,12 +4,8 @@ import requests
 from lxml import html
 import json
 import re
-from multiprocessing.dummy import Pool
-from multiprocessing import cpu_count
-from gevent import monkey
-import gevent
+from PIL import Image
 import time
-
 # from bs4 import BeautifulSoup
 #
 # html = """
@@ -48,58 +44,131 @@ import time
 #     urllib.urlretrieve(item, pic_path.decode('utf-8'))
 #     pic_tag += 1
 
-def request_item(item):
-    new_crawler = ZhihuCrawler(item, src_tag=False)
-    new_crawler.send_request()
+# 处理账户错误信息
+class AccountError(Exception):
+    def __init__(self, err_message):
+        print err_message
 
 
-def get_followee_info(follow_item):
-    ret_event = gevent.spawn(request_item, follow_item)
-    ret_event.join()
+# 获取验证码信息
+def get_capcha(cur_session, cur_header):
+    cur_time = str(int(time.time() * 1000))
+    captcha_url = 'http://www.zhihu.com/captcha.gif?r=' + cur_time + '&type=login'
+    ret = cur_session.get(captcha_url, headers=cur_header)
+    with open('captcha.jpg', 'wb') as f:
+        f.write(ret.content)
+        f.close()
+
+    pic = Image.open('captcha.jpg')
+    print '请输入验证码！'
+    pic.show()
+    pic.close()
+    captcha = raw_input()
+    return captcha
 
 
-# 获取关注人信息
-def implement_pool(followee_list):
-    for followee_item in followee_list:
-        get_followee_info(followee_item)
+# 登录知乎，通过用户名和密码
+def login_zhihu(login_info):
+    login_url = 'https://www.zhihu.com/'
+    user_name = login_info[0]
+    password = login_info[1]
+    account_type = ''
+    # 判断帐号信息是否有效
+    if re.match('^1\d{10}$', user_name):
+        account_type = 'phone_num'
+    elif re.match('^\S+@\d+\.\S+$', user_name):
+        account_type = 'email'
+    else:
+        raise AccountError('帐号类型错误啊！')
 
+    login_header = {}
+    login_header['User-Agent'] = 'Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 ' \
+                                '(KHTML, like Gecko) Chrome/52.0.2743.116 Safari/537.36'
+    login_header['Host'] = 'www.zhihu.com'
+
+    # 获取_xsrf信息
+    ret = requests.get(login_url, headers=login_header)
+    if ret.status_code != 200:
+        print '获取xsrf信息失败！状态码%d，%s' % (ret.status_code, str(ret.reason))
+        return False
+    else:
+        ret_html = ret.text
+        xpath_tree = html.fromstring(ret_html)
+        xsrf_info = xpath_tree.xpath('//input[@name="_xsrf"]/@value')[0]
+
+    # 提交表单
+    up_form = {account_type: user_name, 'password': password, 'remember_me': 'true',
+               '_xsrf': xsrf_info}
+    login_header['Origin'] = 'https://www.zhihu.com'
+    login_header['Refer'] = 'https://www.zhihu.com'
+    login_header['X-Requested-With'] = 'XMLHttpRequest'
+    login_url += 'login/' + account_type
+    login_session = requests.session()
+    up_form['captcha'] = get_capcha(login_session, login_header)
+
+    try:
+        ret = login_session.post(login_url, data=up_form, headers=login_header)
+    except requests.RequestException, e:
+        print '登录失败！'
+        print e
+        print ret.status_code
+        return False
+
+    if ret.status_code == 200:
+        print '登录成功！'
+        print ret.text.encode('utf-8')
+    else:
+        print '登录失败！状态码：%d %s\n' % (ret.status_code, str(ret.reason))
+        return False
+
+    json_dict = json.loads(ret.text)
+    print json_dict['msg']
+    personal_cookie = dict(ret.cookies.items())
+
+    ret = login_session.get('https://www.zhihu.com/settings/profile', headers=login_header, allow_redirects=False)
+    if ret.status_code == 200:
+        print '跳转成功！'
+    else:
+        print '跳转失败！状态码：%d %s\n' % (ret.status_code, str(ret.reason))
+        return False
+
+    # 跳转到用户个人主页
+    html_content = ret.text
+    # print html_content + '\n'
+    head_page_tree = html.fromstring(html_content)
+    user_id = head_page_tree.xpath('//div[@class="url-preview"]/span[@class="token"]/text()')[0].encode(
+        'utf-8')
+
+    # 初始化个人信息爬虫类，src_tag的主要作用是控制走向，只获取输入用户和其关注的人的信息，不再向下递归
+    crawler = ZhihuCrawler(user_id, login_session, login_header, personal_cookie, src_tag=True)
+    crawler.send_request()
 
 
 # 爬取知乎用户信息
 class ZhihuCrawler():
 
     __doc__ = '''
-    用于爬取当前永恒在知乎关注的用户的基本信息
+    用于爬取我在知乎关注的用户的基本信息
     '''
 
-    def __init__(self, user_id, option = 'print_data_out', src_tag=False):
+    def __init__(self, user_id, cur_session, cur_header, cur_cookie, option='print_data_out', src_tag=False):
         '''
         用于初始化该爬虫类
+        :param url:
+        :param option:
         '''
 
         self.option = option
-        self.url = 'https://www.zhihu.com/people/' + user_id
-        self.header = {}
-        self.header['User-Agent'] = 'Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 ' \
-                                    '(KHTML, like Gecko) Chrome/52.0.2743.116 Safari/537.36'
-        self.header['Host'] = 'www.zhihu.com'
-        self.header['Refer'] = 'https://www.zhihu.com/'
-        self.cookie = {'q_c1': '0afa6d2733cf4ccbb679cbef4ff3a925|1472200908000|1464101674000',
-                       'd_c0': '"AADA4lLk-AmPTscNDPGjJ4t3d2RopvZzJHI=|1464101674"',
-                       '__utma': '51854390.815922627.1472525738.1472525738.1472545857.2',
-                       '__utmz': '51854390.1472524354.3.2.utmcsr=zhihu.com|utmccn=(referral)|utmcmd=referral|utmcct=/people/swjason',
-                       '_za': '9a6e39b1-999f-4d2f-b460-abcd76557e1e',
-                       '_zap': '2dd99035-ec47-4726-9fef-543a8bb94d2b',
-                       '_xsrf': 'a854eb73acb2a92f1cd987c6bd157688',
-                       'l_cap_id': '"MTgwZjU5NzkzMGQ5NDY3Mzg5OGZmMDNlOWYxYWQyODA=|1472309343|b7ef7e436372d6aa1930d0887f0ce7d4e63bc133"',
-                       'cap_id': '"NGM1NTk2N2U5YTMwNDg5ODk5MjVmNjk1MWQ3NzlhMjM=|1472309343|9c0387b34e5c29d432b3cdcfaee20bd4f8ac8481"',
-                       'login': '"MzgyZGJhMzc1ODNjNDhlNjk2OGNiN2Y5MDkyN2NmMmQ=|1472309357|5df80be837712c8cf0e78e2fab6fe3ef448b1b33',
-                       'a_t': '"2.0AADAPLkZAAAXAAAAj9TsVwAAwDy5GQAAAADA4lLk-AkXAAAAYQJVTW016VcAscVcbbeQM3694bTyr4hpz7jJHXcnnD_YZJvOAQ0xENmbZ24rcA2XFg=="',
-                       'z_c0': 'Mi4wQUFEQVBMa1pBQUFBQU1EaVV1VDRDUmNBQUFCaEFsVk5iVFhwVndDeHhWeHR0NUF6ZnIzaHRQS3ZpR25QdU1rZGR3|1472546703|e87c0b2393382a42c8e4ecb063fe20b0179565a5',
-                       '__utmc': '51854390', '__utmv': '51854390.100-1|2=registration_date=20120925=1^3=entry_date=20120925=1', '__utmb': '51854390.17.9.1472545898784'}
+        self.personal_url = 'https://www.zhihu.com/people/' + user_id
+        self.header = cur_header
+        self.session = cur_session
+        self.cookie = cur_cookie
+
         # 用户个人信息
         self.user_id = user_id
-        self.user_name = ''
+        self.login_list = login_list
+        self.user_name = login_list[0]
+        self.user_psword = login_list[1]
         self.user_gender = ''
         self.user_location = ''
         self.user_followers_num = 0
@@ -114,53 +183,46 @@ class ZhihuCrawler():
         self.user_introduction = ''
         self.user_weibo_addr = ''
         self.src_tag = src_tag
-        self.skilled_topic_list = []
+        self.account_type = ''
 
     def send_request(self):
-        '''
-        发送HTTP请求
-        :return:
-        '''
-        if self.src_tag is True:
-            get_url = self.url + '/followees'
-        else:
-            get_url = self.url
-        try:
-            ret = requests.get(get_url, cookies=self.cookie, headers=self.header)
-        except requests.RequestException, e:
-            print '查询用户信息失败！'
-            print e.strerror
-            print ret.status_code
+        # followee_url = self.url + '/followees'
+        self_page_url = 'https://www.zhihu.com/people/' + self.user_id
+        self.personal_url = self_page_url
 
-        if ret.status_code == 200:
-            pass
-            # print '登录成功！'
-        else:
-            print('登录失败！状态码：%d\n' % ret.status_code)
+        try:
+            ret = self.session.get(self_page_url, headers=self.header)
+        except requests.RequestException, e:
+            print('跳转到个人页面失败！状态码：%d\n' % ret.status_code)
+            print('错误描述：%s' % str(e))
             return
 
-        html_content = ret.text
-        # print html_content + '\n'
-        self.process_xpath_source(html_content)
+        if ret.status_code == 200:
+            # print '跳转到个人页面成功啦！'
+            pass
+        else:
+            print('跳转到个人页面失败！状态码：%d\n' % ret.status_code)
+            return
 
-    def process_xpath_source(self, source):
+        # print ret.text
+        self.process_xpath_source(ret.text, self_page_url, self.header, self.cookie, self.session)
+
+    # 部分知乎用户的个人页面使用了新的布局，需要兼容
+    def process_xpath_source(self, source, cur_url, cur_header, cookies, session):
         if len(source) <= 0:
             print '长度为空！\n'
             return
         else:
-            # print source
             xpath_tree = html.fromstring(source)
             # 解析获取的到的html
             print('用户个人信息：')
             print '*' * 20
             try:
-                if self.src_tag is True:
-                    self.user_name = xpath_tree.xpath('//div[@class="title-section"]/a/text()')[0].encode('utf-8')
-                else:
-                    self.user_name = xpath_tree.xpath('//div[@class="title-section"]/span/text()')[0].encode('utf-8')
+                self.user_name = xpath_tree.xpath('//div[@class="title-section"]/span[@class="name"]/text()')[0].encode('utf-8')
                 print('用户名：%s' % self.user_name)
             except:
-                pass
+                self.user_name = xpath_tree.xpath('//span[@class="ProfileHeader-name"]/text()')[0].encode('utf-8')
+                print('用户名：%s' % self.user_name)
             try:
                 self.user_location = xpath_tree.xpath('//span[@class="location item"]/@title')[0].encode('utf-8')
                 print('所在地:%s' % self.user_location)
@@ -196,14 +258,16 @@ class ZhihuCrawler():
             except:
                 pass
             try:
-                self.user_info = xpath_tree.xpath("//span[@class='bio']/@title")[0].encode('utf-8')
-                print('个人信息：%s' % self.user_info)
+                self.user_info = xpath_tree.xpath("//span[@class='bio ellipsis']/@title")[0].encode('utf-8')
+                print('一句话介绍：%s' % self.user_info)
             except:
                 pass
             try:
                 self.user_introduction = xpath_tree.xpath('//textarea[@class="zm-editable-editor-input description" '
                                                           'and @id="profile-header-description-input" and '
                                                           '@name="description"]/text()')[0].encode('utf-8')
+                #intro_list = self.user_introduction.split('\n')
+                # print intro_list
                 print('个人简介:%s' % self.user_introduction)
             except:
                 pass
@@ -213,15 +277,17 @@ class ZhihuCrawler():
             except:
                 pass
 
-            print('个人知乎主页地址:%s' % self.url)
+            print('个人知乎主页地址:%s' % self.personal_url)
 
             try:
-                self.user_followees_num = int(xpath_tree.xpath('//a[@href="/people/' + self.user_id +'/followees"]/strong/text()')[0].encode('utf-8'))
+                self.user_followees_num = int(xpath_tree.xpath('//a[@href="/people/' + self.user_id +'/followees"]'
+                        '/strong/text()')[0].encode('utf-8'))
                 print('关注了%d人' % self.user_followees_num)
             except:
                 pass
             try:
-                self.user_followers_num = int(xpath_tree.xpath('//a[@href="/people/' + self.user_id +'/followers"]/strong/text()')[0].encode('utf-8'))
+                self.user_followers_num = int(xpath_tree.xpath('//a[@href="/people/' + self.user_id
+                        +'/followers"]/strong/text()')[0].encode('utf-8'))
                 print('被%d人关注' % self.user_followers_num)
             except:
                 pass
@@ -235,61 +301,61 @@ class ZhihuCrawler():
                 print('当前获得感谢数：%d' % self.user_thank_num)
             except:
                 pass
-            # 20160913 获取当前用户擅长话题
-            if len(xpath_tree.xpath('//div[@class="zm-profile-section-wrap zm-profile-section-grid skilled-topics"]')) > 0:
-                for item in xpath_tree.xpath('//div[@class="zm-profile-section-list zg-clear"]/div/div/div/h3/a/text()'):
-                    self.skilled_topic_list.append(item.encode('utf-8'))
-
-                # 隐藏的擅长话题对应的是'script'类型的结点，其向下的层级没有层次关系，都是普通的文本，需要使用正则表达式
-                hide_lst = xpath_tree.xpath('//script[@class="ProfileExpertItem-template"]/text()')
-                if len(hide_lst) > 0:
-                    for item in hide_lst:
-                        try:
-                            ret_item = re.search('class="zg-gray-darker">(.*?)</a>', item.encode('utf-8'))
-                            self.skilled_topic_list.append(ret_item.groups(0)[0])
-                        except:
-                            pass
-                print '该用户擅长话题：'
-                for item in self.skilled_topic_list:
-                    print item
-
             print '*' * 25
-            # 模拟点击页面底部的"更多"按钮，获取全部关注者
-            if self.src_tag is True:
-                print('下面获取其关注的%d名用户的信息。。。\n' % self.user_followees_num)
-                self.get_all_followees(xpath_tree, self.user_followees_num)
 
-    def get_all_followees(self, xpath_tree, followees_num):
+            # 跳转到关注者页面
+            if self.src_tag is True:
+                try:
+                    ret = session.get(cur_url + '/followees', cookies=cookies, headers=cur_header)
+                except session.RequestException, e:
+                    print('跳转到关注页面失败！状态码：%d\n' % ret.status_code)
+                    print('错误描述：%s' % str(e))
+                    return
+
+                if ret.status_code == 200:
+                    # print '跳转到关注页面成功啦！'
+                    pass
+                else:
+                    print'跳转到关注页面失败！状态码：%d %s\n' % (ret.status_code, str(ret.reason))
+                    return
+
+            # 模拟点击页面底部的"更多"按钮，获取全部关注者
+            if self.src_tag is True and self.user_followees_num > 0:
+                print('下面获取其关注的%d名用户的信息。。。\n' % self.user_followees_num)
+                xpath_tree = html.fromstring(ret.text)
+                self.get_all_followees(xpath_tree, self.user_followees_num, session)
+
+    def get_all_followees(self, xpath_tree, followees_num, cur_session):
 
         '''通过模拟鼠标点击，发送http请求，获取全部关注者'''
-        more_header = {}
-        more_header['User-Agent'] = 'Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)' \
-                                    ' Chrome/52.0.2743.116 Safari/537.36'
-        more_header['Host'] = 'www.zhihu.com'
-        more_header['Origin'] = 'https://www.zhihu.com'
-        more_header['Referer'] = 'https://www.zhihu.com/people/swjason/followees'
-        more_header['X-Requested-With'] = 'XMLHttpRequest'
-        more_header['X-Xsrftoken'] = '264c48f2b1b06633e4dde54460648cb0'
+        count = 0
+        # 先获取20个人现成的
+        cur_list = xpath_tree.xpath('//a[@class="zg-link author-link"]/@href')
+        for cur_item in cur_list:
+            cur_split_list = cur_item.split('/people/')
+            # print cur_split_list[1]
+            new_crawler = ZhihuCrawler(cur_split_list[1], self.session, self.header, self.cookie)
+            new_crawler.send_request()
+            count += 1
+        # cur_header['Refer'] = 'https://www.zhihu.com/people/swjason/followees'
         _xsrf = xpath_tree.xpath('//input[@name="_xsrf"]/@value')[0].encode('utf-8')
+        # cur_header['X-Xsrftoken'] = _xsrf
+
+        header = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                          '(KHTML, like Gecko) Chrome/54.0.2840.71 Safari/537.36',
+            'Host': "www.zhihu.com",
+            'Referer': 'https://www.zhihu.com/people/swjason/followees',
+            'Origin': 'https: // www.zhihu.com',
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-Xsrftoken': _xsrf
+        }
+
         data_init = xpath_tree.xpath('//div[@class="zh-general-list clearfix"]/@data-init')[0].encode('utf-8')
         params_dict = json.loads(data_init)
         cur_hash_id = params_dict['params']['hash_id']
 
         click_num = followees_num / 20
-        count = 0
-        follow_list = []
-
-        cur_href_list = xpath_tree.xpath('//a[@class="zm-item-link-avatar"]/@href')
-        for item in cur_href_list:
-            # 拆分字符串，获取关注的人的知乎ID
-            cur_href = item.encode('utf-8')
-            cur_split_list = cur_href.split('/people/')
-            # 此处最好用正则表达式，因为知乎现在不仅有个人账号，抓取到的html的形式未必有'/people/'
-            ret_re = re.match('/\w+/(.*)', cur_href)
-            # new_crawler = ZhihuCrawler(ret_re.groups(0)[0], src_tag=False)
-            # new_crawler.send_request()
-            count += 1
-            follow_list.append(ret_re.groups(0)[0])
 
         for i in xrange(1, click_num + 1):
             # 因为关注者列表一次只显示20人，所以需要多次发送请求显示全部关注的人
@@ -299,9 +365,12 @@ class ZhihuCrawler():
             payload = {'method': 'next', 'params': params, '_xsrf': _xsrf}
 
             try:
-                ret_more = requests.post(more_url, cookies=self.cookie, data=payload, headers=more_header)
+                ret_more = cur_session.post(more_url, data=payload, headers=header)
                 if ret_more.status_code == 200:
                     cur_result = ret_more.text
+                    # if i < 3:
+                    #     print cur_result
+                    # 获取当前用户全部关注的人的信息
                     info_dict = json.loads(cur_result)
                     cur_info_list = info_dict['msg']
                     for item in cur_info_list:
@@ -309,34 +378,30 @@ class ZhihuCrawler():
                         cur_href = xpath_tree.xpath('//a[@class="zm-item-link-avatar"]/@href')[0].encode('utf-8')
                         # 拆分字符串，获取关注的人的知乎ID
                         cur_split_list = cur_href.split('/people/')
-                        follow_list.append(cur_split_list[1])
-                        # new_crawler = ZhihuCrawler(cur_split_list[1], src_tag=False)
-                        # new_crawler.send_request()
+                        # print cur_split_list[1]
+                        new_crawler = ZhihuCrawler(cur_split_list[1], self.session, self.header, self.cookie)
+                        new_crawler.send_request()
                         count += 1
+
+                    # print '获取成功！'
                 else:
                     print('获取失败！状态码：%d\n' % ret_more.status_code)
                     print ret_more.reason
             except requests.RequestException as e:
-                print e.strerror
-
-        # 20160916使用多进程爬取关注的人
-        # spawn_list = []
-        # for item in follow_list:
-        #     spawn_list.append(gevent.spawn(get_followee_info, item))
-        #
-        # gevent.joinall(spawn_list)
-        # print count
-        ret_pool = Pool(cpu_count() * 2)
-        ret_pool.apply_async(implement_pool(follow_list))
-        ret_pool.close()
-        ret_pool.join()
+                pass
+           # print('%d:%s' % i, cur_name)
+        print count
 
 if __name__ == '__main__':
-    print '请输入知乎用户ID：\n'
-    start_name = raw_input()
-    time1 = time.time()
-    # src_tag的主要作用是控制走向，只获取输入用户和其关注的人的信息，不再向下递归
-    crawler = ZhihuCrawler(start_name, src_tag=True)
-    crawler.send_request()
-    time2 = time.time()
-    print '总用时：%d' , time2 - time1
+    print '请输入用户名和密码，以空格分隔，输入完成后按回车键结束：\n'
+    login_str = raw_input()
+    login_list = login_str.split(' ')
+    while len(login_list) != 2 or len(login_list[1]) < 6:
+        print '输入错误，请重新输入！'
+        login_str = raw_input()
+        login_list = login_str.split(' ')
+
+    login_zhihu(login_list)
+
+
+
