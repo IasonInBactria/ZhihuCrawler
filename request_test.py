@@ -217,90 +217,176 @@ class ZhihuCrawler():
             # 解析获取的到的html
             print('用户个人信息：')
             print '*' * 20
-            try:
-                self.user_name = xpath_tree.xpath('//div[@class="title-section"]/span[@class="name"]/text()')[0].encode('utf-8')
-                print('用户名：%s' % self.user_name)
-            except:
+            # 分析页面布局，区分是否为新版个人页面
+            page_flag = False
+            if len(xpath_tree.xpath('//head/@data-reactid')) > 0:
+                page_flag = True
+            if page_flag is True:
                 self.user_name = xpath_tree.xpath('//span[@class="ProfileHeader-name"]/text()')[0].encode('utf-8')
                 print('用户名：%s' % self.user_name)
-            try:
-                self.user_location = xpath_tree.xpath('//span[@class="location item"]/@title')[0].encode('utf-8')
-                print('所在地:%s' % self.user_location)
-            except:
-                pass
-            try:
-                self.user_gender = xpath_tree.xpath('//span[@class="item gender"]/i/@class')[0].encode('utf-8')
-                if 'female' in self.user_gender:
-                    self.user_gender = 'female'
-                else:
+                try:
+                    self.user_location = xpath_tree.xpath('//div[@class="ProfileHeader-infoItem"]/text()')[0].encode('utf-8')
+                    print('所在地:%s' % self.user_location)
+                except:
+                    pass
+                if len(xpath_tree.xpath('//svg[@class="Icon Icon--male"]')) > 0:
                     self.user_gender = 'male'
-                print('性别：%s' % self.user_gender)
-            except:
-                pass
-            try:
-                self.user_employment = xpath_tree.xpath('//span[@class="employment item"]/@title')[0].encode('utf-8')
-                print('任职单位：%s' % self.user_employment)
-            except:
-                pass
-            try:
-                self.user_profession = xpath_tree.xpath('//span[@class="education-extra item"]/@title')[0].encode('utf-8')
-                print('所在行业：%s' % self.user_profession)
-            except:
-                pass
-            try:
-                self.user_school = xpath_tree.xpath('//span[@class="education item"]/@title')[0].encode('utf-8')
-                print('毕业学校:%s' % self.user_school)
-            except:
-                pass
-            try:
-                self.user_major = xpath_tree.xpath('//span[@class="education-extra item"]/@title')[0].encode('utf-8')
-                print('专业:%s' % self.user_major)
-            except:
-                pass
-            try:
-                self.user_info = xpath_tree.xpath("//span[@class='bio ellipsis']/@title")[0].encode('utf-8')
-                print('一句话介绍：%s' % self.user_info)
-            except:
-                pass
-            try:
-                self.user_introduction = xpath_tree.xpath('//textarea[@class="zm-editable-editor-input description" '
-                                                          'and @id="profile-header-description-input" and '
-                                                          '@name="description"]/text()')[0].encode('utf-8')
-                #intro_list = self.user_introduction.split('\n')
-                # print intro_list
-                print('个人简介:%s' % self.user_introduction)
-            except:
-                pass
-            try:
-                self.user_weibo_addr = xpath_tree.xpath('//a[@class="zm-profile-header-user-weibo"]/@href')[0].encode('utf-8')
-                print('新浪微博地址:%s' % self.user_weibo_addr)
-            except:
-                pass
+                    print('性别：%s' % self.user_gender)
+                elif len(xpath_tree.xpath('//svg[@class="Icon Icon--female"]')) > 0:
+                    self.user_gender = 'female'
+                    print('性别：%s' % self.user_gender)
+                try:
+                    work_list = xpath_tree.xpath('//div[@class="ProfileHeader-info"]/div[@class="ProfileHeader-'
+                                                 'infoItem"][2]/text()')
+                    for work_item in work_list:
+                        self.user_employment += work_item.encode('utf-8')
+                    if len(work_list) > 0:
+                        print('职业经历：%s' % self.user_employment)
+                except:
+                    pass
+                try:
+                    edu_list = xpath_tree.xpath('//div[@class="ProfileHeader-info"]'
+                                                '/div[@class="ProfileHeader-infoItem"][3]/text()')
+                    for edu_item in edu_list:
+                        self.user_employment += edu_item.encode('utf-8')
+                    if len(edu_list) > 0:
+                        print('教育经历：%s' % self.user_school)
+                except:
+                    pass
+                try:
+                    self.user_info = xpath_tree.xpath("//span[@class='RichText "
+                                                      "ProfileHeader-headline']/text()")[0].encode('utf-8')
+                    print('一句话介绍：%s' % self.user_info)
+                except:
+                    pass
+                try:
+                    follow_list = xpath_tree.xpath('//div[@class="Profile-followStatusValue"]/text()')
+                    self.user_followees_num = follow_list[0]
+                    self.user_followers_num = follow_list[1]
+                    print '关注了%d人' % self.user_followees_num
+                    print '被%d人关注' % self.user_followers_num
+                except:
+                    pass
+                try:
+                    self.user_agree_num = int(
+                        xpath_tree.xpath('//div[@id="root"]/div/main/div/div[1]/div[2]/div[2]'
+                                         '/div[1]/div[2]/div[3]/div[1]/text()[2]')[0].encode('utf-8'))
+                    print('当前获得赞同数：%d' % self.user_agree_num)
+                except:
+                    pass
+                try:
+                    self.user_thank_num = int(xpath_tree.xpath('//div[@id="root"]'
+                                                               '/div/main/div/div[1]/div[2]/div[2]/div[1]'
+                                                               '/div[2]/div[3]/div[2]/text()[1]')[0].encode('utf-8'))
+                    print('当前获得感谢数：%d' % self.user_thank_num)
+                except:
+                    pass
+                # # 发送请求，获取全部个人信息
+                # cur_header['Host'] = 'zhihu-web-analytics.zhihu.com'
+                # cur_header['Referer'] = cur_url
+                # ret = session.post(cur_url, cookies=cookies, headers=cur_header)
+                # if ret.status_code == 200:
+                #     print '获取全部信息成功！'
+                #     print ret.text
+                #
+                #     try:
+                #         self.user_introduction = xpath_tree.xpath('//div[@class="RichText ProfileHeader'
+                #                                                   '-detailValue"]/text()')[0].encode('utf-8')
+                #         print '个人简介:%s' % self.user_introduction
+                #     except:
+                #         pass
+                #     try:
+                #         self.user_weibo_addr = \
+                #         xpath_tree.xpath('//div[@id="ProfileHeader"]/div[2]/div/div/div[1]/div[2]'
+                #                          '/span/div/div[5]/div/a/@href')[0].encode('utf-8')
+                #         print '社交帐号：%d' % self.user_weibo_addr
+                #     except:
+                #         pass
+                # else:
+                #     print ret.reason
 
-            print('个人知乎主页地址:%s' % self.personal_url)
+            else:
+                self.user_name = xpath_tree.xpath('//div[@class="title-section"]/span[@class="name"]/text()')[0].encode('utf-8')
+                print('用户名：%s' % self.user_name)
 
-            try:
-                self.user_followees_num = int(xpath_tree.xpath('//a[@href="/people/' + self.user_id +'/followees"]'
-                        '/strong/text()')[0].encode('utf-8'))
-                print('关注了%d人' % self.user_followees_num)
-            except:
-                pass
-            try:
-                self.user_followers_num = int(xpath_tree.xpath('//a[@href="/people/' + self.user_id
-                        +'/followers"]/strong/text()')[0].encode('utf-8'))
-                print('被%d人关注' % self.user_followers_num)
-            except:
-                pass
-            try:
-                self.user_agree_num = int(xpath_tree.xpath('//span[@class="zm-profile-header-user-agree"]/strong/text()')[0].encode('utf-8'))
-                print('当前获得赞同数：%d' % self.user_agree_num)
-            except:
-                pass
-            try:
-                self.user_thank_num = int(xpath_tree.xpath('//span[@class="zm-profile-header-user-thanks"]/strong/text()')[0].encode('utf-8'))
-                print('当前获得感谢数：%d' % self.user_thank_num)
-            except:
-                pass
+                try:
+                    self.user_location = xpath_tree.xpath('//span[@class="location item"]/@title')[0].encode('utf-8')
+                    print('所在地:%s' % self.user_location)
+                except:
+                    pass
+                try:
+                    self.user_gender = xpath_tree.xpath('//span[@class="item gender"]/i/@class')[0].encode('utf-8')
+                    if 'female' in self.user_gender:
+                        self.user_gender = 'female'
+                    else:
+                        self.user_gender = 'male'
+                    print('性别：%s' % self.user_gender)
+                except:
+                    pass
+                try:
+                    self.user_employment = xpath_tree.xpath('//span[@class="employment item"]/@title')[0].encode('utf-8')
+                    print('任职单位：%s' % self.user_employment)
+                except:
+                    pass
+                try:
+                    self.user_profession = xpath_tree.xpath('//span[@class="education-extra item"]/@title')[0].encode('utf-8')
+                    print('所在行业：%s' % self.user_profession)
+                except:
+                    pass
+                try:
+                    self.user_school = xpath_tree.xpath('//span[@class="education item"]/@title')[0].encode('utf-8')
+                    print('毕业学校:%s' % self.user_school)
+                except:
+                    pass
+                try:
+                    self.user_major = xpath_tree.xpath('//span[@class="education-extra item"]/@title')[0].encode('utf-8')
+                    print('专业:%s' % self.user_major)
+                except:
+                    pass
+                try:
+                    self.user_info = xpath_tree.xpath("//span[@class='bio ellipsis']/@title")[0].encode('utf-8')
+                    print('一句话介绍：%s' % self.user_info)
+                except:
+                    pass
+                try:
+                    self.user_introduction = xpath_tree.xpath('//textarea[@class="zm-editable-editor-input description" '
+                                                              'and @id="profile-header-description-input" and '
+                                                              '@name="description"]/text()')[0].encode('utf-8')
+                    #intro_list = self.user_introduction.split('\n')
+                    # print intro_list
+                    print('个人简介:%s' % self.user_introduction)
+                except:
+                    pass
+                try:
+                    self.user_weibo_addr = xpath_tree.xpath('//a[@class="zm-profile-header-user-weibo"]/@href')[0].encode('utf-8')
+                    print('新浪微博地址:%s' % self.user_weibo_addr)
+                except:
+                    pass
+
+                print('个人知乎主页地址:%s' % self.personal_url)
+
+                try:
+                    self.user_followees_num = int(xpath_tree.xpath('//a[@href="/people/' + self.user_id +'/followees"]'
+                            '/strong/text()')[0].encode('utf-8'))
+                    print('关注了%d人' % self.user_followees_num)
+                except:
+                    pass
+                try:
+                    self.user_followers_num = int(xpath_tree.xpath('//a[@href="/people/' + self.user_id
+                            +'/followers"]/strong/text()')[0].encode('utf-8'))
+                    print('被%d人关注' % self.user_followers_num)
+                except:
+                    pass
+                try:
+                    self.user_agree_num = int(xpath_tree.xpath('//span[@class="zm-profile-header-user-agree"]/strong/text()')[0].encode('utf-8'))
+                    print('当前获得赞同数：%d' % self.user_agree_num)
+                except:
+                    pass
+                try:
+                    self.user_thank_num = int(xpath_tree.xpath('//span[@class="zm-profile-header-user-thanks"]/strong/text()')[0].encode('utf-8'))
+                    print('当前获得感谢数：%d' % self.user_thank_num)
+                except:
+                    pass
             print '*' * 25
 
             # 跳转到关注者页面
